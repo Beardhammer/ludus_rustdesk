@@ -913,4 +913,4 @@ const textArea = document.createElement("textarea");
 </html>""")
     
     app.logger.info("Starting RustDesk Client Management Server")
-    app.run(host='0.0.0.0', port=8000)
+    app.run(host='0.0.0.0', port=httpportchangeme)
