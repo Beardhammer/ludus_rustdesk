@@ -177,6 +177,12 @@
         dest: /opt/httpserver/RustdeskAddressbook.py
         mode: '0755'
 
+    - name: Set http port
+      ansible.builtin.replace:
+        path: /opt/httpserver/RustdeskAddressbook.py
+        regexp: 'httpportchangeme'
+        replace: "{{ http_port }}"
+
     - name: Create HTTP Server systemd service
       ansible.builtin.template:
         src: httpserver.service.j2
