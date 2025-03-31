@@ -1,0 +1,35 @@
+---
+dependencies: []
+
+galaxy_info:
+  role_name: ludus_rustdesk
+  author: beardhammer
+  description: An Ansible role that install Rustdesk Server on Debian and Rustdesk Client on Windows/Linux
+  company: None
+  license: GPLv3
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Windows
+      versions:
+        - "all"
+    - name: Fedora
+      versions:
+        - all
+    - name: Amazon
+      versions:
+        - all
+    - name: Ubuntu
+      versions:
+        - all
+    - name: GenericLinux
+      versions:
+        - all
+        - any
+    - name: Debian
+      versions:
+        - all
+  galaxy_tags:
+    - ludus
+    - rustdesk
+
+collections: []

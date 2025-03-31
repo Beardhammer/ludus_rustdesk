@@ -1,0 +1,16 @@
+[Unit]
+Description=Flask HTTP Server
+[Service]
+Type=simple
+LimitNOFILE=1000000
+ExecStart=/opt/httpserver/venv/bin/python3 /opt/httpserver/RustdeskAddressbook.py
+WorkingDirectory=/opt/httpserver/
+User={{ rustdesk_admin_user }}
+Group={{ rustdesk_admin_user }}
+Restart=always
+StandardOutput=append:/var/log/http/httpserver.log
+StandardError=append:/var/log/http/httpserver.error
+# Restart service after 10 seconds if service crashes
+RestartSec=10
+[Install]
+WantedBy=multi-user.target

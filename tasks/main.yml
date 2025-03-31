@@ -1,0 +1,44 @@
+---
+- name: Include server tasks for Debian-based systems
+  include_tasks: rustdesk_server.yml
+  when: 
+    - rustdesk_server
+    - ansible_os_family == "Debian"
+
+- name: Fail for unsupported server OS
+  fail:
+    msg: "Server installation is only supported on Debian-based systems"
+  when: 
+    - rustdesk_server
+    - ansible_os_family != "Debian"
+
+- name: Ensure Server IP for Clients
+  block:
+    - name: Extract values of Rustdesk server
+      ansible.builtin.set_fact:
+        ludus_rustdesk_vm_vlan: "{{ item.vlan }}"
+        ludus_rustdesk_vm_ip_last_octet: "{{ item.ip_last_octet }}"
+      loop: "{{ ludus }}"
+      when: item.role_vars is defined and 'rustdesk_server' in (item.role_vars | join(' '))
+
+    - name: Fail if no rustdesk server VM found
+      ansible.builtin.fail:
+        msg: "Could not find any VM that has rustdesk_server in rolevars in your config"
+      when: ludus_rustdesk_vm_vlan is undefined or ludus_rustdesk_vm_ip_last_octet is undefined
+
+    - name: Set the Rustdesk Server ip
+      ansible.builtin.set_fact:
+        rustdesk_server_ip:
+          "10.{{ range_second_octet }}.{{ ludus_rustdesk_vm_vlan }}.{{ ludus_rustdesk_vm_ip_last_octet }}"
+          
+    - name: Include Linux client tasks
+      include_tasks: rustdesk_client_linux.yml
+      when: 
+        - rustdesk_client
+        - ansible_os_family != "Windows"
+
+    - name: Include Windows client tasks
+      include_tasks: rustdesk_client_windows.yml
+      when: 
+        - rustdesk_client
+        - ansible_os_family == "Windows"

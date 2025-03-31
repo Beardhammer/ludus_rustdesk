@@ -1,0 +1,14 @@
+---
+# Server configuration
+rustdesk_admin_user: "rustdeskadmin"
+rustdesk_admin_password: "rustdeskadmin" 
+rustdesk_install_dir: "/opt/rustdesk"
+
+# Client configuration
+rustdesk_server_ip: ""
+rustdesk_client_password: "rustdeskclientpassword"
+http_port: 8000 
+rustdesk_clientid: ""
+
+rustdesk_server: false
+rustdesk_client: false

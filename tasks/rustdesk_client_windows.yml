@@ -1,0 +1,140 @@
+- name: Get the latest RustDesk release information
+  ansible.builtin.uri:
+    url: https://api.github.com/repos/rustdesk/rustdesk/releases/latest
+    method: GET
+    return_content: yes
+    status_code: 200
+    headers:
+      Accept: application/vnd.github.v3+json
+    force_basic_auth: no
+  register: github_response
+  delegate_to: localhost
+
+- name: Set latest version as a fact
+  ansible.builtin.set_fact:
+    rd_latest_version: "{{ github_response.json.tag_name | regex_replace('^v', '') }}"
+
+- name: Need 6 Char Min for Client ID
+  ansible.builtin.set_fact:
+    newclient_id: >-
+          {{ 
+            ansible_hostname + 
+            lookup('password', '/dev/null chars=digits length=' + 
+            (6 - ansible_hostname | length) | string) 
+          }}
+  when: ansible_hostname | length < 6
+
+- name: Set Client ID if Hostname is greater than 6
+  ansible.builtin.set_fact:
+    newclient_id: "{{ ansible_hostname }}"
+  when:  ansible_hostname | length >= 6
+
+- name: Get RustDesk registry information
+  ansible.windows.win_reg_stat:
+    path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RustDesk
+  register: rd_reg_info
+
+- name: Get current RustDesk version
+  ansible.windows.win_reg_stat:
+    path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RustDesk
+    name: Version
+  register: rd_version
+  when: rd_reg_info.exists
+
+- name: Set current version fact
+  ansible.builtin.set_fact:
+    current_version: "{{ rd_version.value | default(0) }}"
+
+- name: Create Temp directory if it doesn't exist
+  ansible.windows.win_file:
+    path: C:\Temp
+    state: directory
+  when: current_version != rd_latest_version
+
+- name: Download latest RustDesk installer
+  ansible.windows.win_get_url:
+    url: "https://github.com/rustdesk/rustdesk/releases/download/{{ rd_latest_version }}/rustdesk-{{ rd_latest_version }}-x86_64.msi"
+    dest: C:\Temp\rustdesk.msi
+  when: current_version != rd_latest_version
+  register: download_result
+
+- name: Install RustDesk silently
+  ansible.windows.win_package:
+    path: C:\Temp\rustdesk.msi
+    state: present
+  when: current_version != rd_latest_version and download_result is succeeded
+
+- name: Wait for service installation to complete
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Ensure RustDesk service is running
+  ansible.windows.win_service:
+    name: RustDesk
+    state: started
+    start_mode: auto
+  register: service_start
+
+- name: Get Config 
+  ansible.windows.win_uri:
+    url: "http://{{ rustdesk_server_ip }}:{{ http_port }}/rustdesk_config.txt"
+    return_content: yes
+  register: response
+
+- name: Apply RustDesk configuration
+  ansible.windows.win_command: '"{{ ansible_env.ProgramFiles }}\RustDesk\rustdesk.exe" --config {{ response.content | regex_replace ("serverip", rustdesk_server_ip ) }}'
+  args:
+    chdir: "{{ ansible_env.ProgramFiles }}\\RustDesk"
+
+- name: Set RustDesk password
+  ansible.windows.win_command: '"{{ ansible_env.ProgramFiles }}\RustDesk\rustdesk.exe" --password {{ rustdesk_client_password }}'
+  args:
+    chdir: "{{ ansible_env.ProgramFiles }}\\RustDesk"
+
+- name: Set ID to Hostname
+  ansible.windows.win_powershell:
+    script: |
+      $path = 'C:\Windows\ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk.toml'
+      (Get-Content $path) -replace '^enc_id = .*', "id = '{{ newclient_id }}'" | Set-Content $path
+
+- name: Restart RustDesk service
+  ansible.windows.win_service:
+    name: RustDesk
+    state: restarted
+
+- name: Wait for service to restart
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Get RustDesk ID
+  ansible.windows.win_command: '"{{ ansible_env.ProgramFiles }}\RustDesk\rustdesk.exe" --get-id'
+  args:
+    chdir: "{{ ansible_env.ProgramFiles }}\\RustDesk"
+  register: rustdesk_id_output
+
+- name: Register client with server
+  ansible.windows.win_uri:
+    url: "http://{{ rustdesk_server_ip }}:{{ http_port }}/register"
+    url_method: POST
+    content_type: application/json
+    body:  '{ 
+        "client_id": "{{ rustdesk_id_output.stdout|trim }}",
+        "hostname": "{{ ansible_hostname }}",
+        "os": "{{ ansible_distribution }} {{ ansible_distribution_version }}",
+        "connection_string": "rustdesk://connection/new/{{ rustdesk_id_output.stdout|trim }}?password={{ rustdesk_client_password }}"
+           }'
+    status_code: [200, 201]
+
+- name: Clean up installer
+  ansible.windows.win_file:
+    path: C:\Temp\rustdesk.msi
+    state: absent
+  when: download_result is defined and download_result is succeeded
+
+- name: Display RustDesk ID
+  ansible.builtin.debug:
+    msg: "RustDesk ID: {{ rustdesk_id_output.stdout | trim }}"
+
+- name: Display RustDesk Password
+  ansible.builtin.debug:
+    msg: "Password: {{ rustdesk_client_password }}"

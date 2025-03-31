@@ -1,0 +1,138 @@
+- name: Install prerequisites
+  ansible.builtin.package:
+    name: curl
+    state: present
+    update_cache: yes
+
+- name: Get the latest RustDesk release information
+  ansible.builtin.uri:
+    url: https://api.github.com/repos/rustdesk/rustdesk/releases/latest
+    method: GET
+    return_content: yes
+    status_code: 200
+    headers:
+      Accept: application/vnd.github.v3+json
+    force_basic_auth: no
+  register: github_response
+  delegate_to: localhost
+
+- name: Set latest version as a fact
+  ansible.builtin.set_fact:
+    rd_latest_version: "{{ github_response.json.tag_name | regex_replace('^v', '') }}"
+
+- name: Need 6 Char Min for Client ID
+  ansible.builtin.set_fact:
+    newclient_id: >-
+          {{ 
+            ansible_hostname + 
+            lookup('password', '/dev/null chars=digits length=' + 
+            (6 - ansible_hostname | length) | string) 
+          }}
+  when: ansible_hostname | length < 6
+
+- name: Set Client ID if Hostname is greater than 6
+  ansible.builtin.set_fact:
+    newclient_id: "{{ ansible_hostname }}"
+  when:  ansible_hostname | length >= 6
+
+- name: Check if Rustdesk is already installed
+  ansible.builtin.stat:
+    path: /usr/bin/rustdesk
+  register: rustdesk_installed
+
+- name: Check Rustdesk version if installed
+  ansible.builtin.shell: "rustdesk --version"
+  register: rustdesk_version
+  when: rustdesk_install is defined and rustdesk_install.stat.exists
+
+- name: Download and install when not installed/latest version
+  when: rustdesk_version != rd_latest_version or rustdesk_installed is not defined
+  block:
+    - name: deb packages for debian systems
+      when: ansible_os_family == "Debian"
+      block:
+        - name: Download Rustdesk server based on architecture
+          ansible.builtin.get_url:
+            url: "https://github.com/rustdesk/rustdesk/releases/download/{{ rd_latest_version }}/rustdesk-{{ rd_latest_version }}-{{ 'x86_64' if ansible_architecture == 'x86_64' else 'armv7-sciter' if ansible_architecture == 'armv7l' else 'aarch64' }}.deb"
+            dest: "/tmp/rustdesk.deb"
+
+        - name: Install Rustdesk
+          ansible.builtin.apt:
+            deb: /tmp/rustdesk.deb
+
+    - name: rpm packages for redhat/centos
+      when: ansible_os_family == "Redhat"
+      block:
+        - name: Download Rustdesk server based on architecture
+          ansible.builtin.get_url:
+            url: "https://github.com/rustdesk/rustdesk/releases/download/{{ rd_latest_version }}/rustdesk-{{ rd_latest_version }}-0.x86-64.rpm"
+            dest: "/tmp/rustdesk.rpm"
+
+        - name: Install Rustdesk
+          ansible.builtin.dnf:
+            name: /tmp/rustdesk.deb
+            state: present
+
+    - name: Wait for Rustdesk relay service to be ready
+      ansible.builtin.shell: systemctl status rustdesk.service | grep 'Active. active (running)'
+      register: relay_status
+      until: relay_status.rc == 0
+      retries: 10
+      delay: 3
+      changed_when: false
+
+- name: Get latest Rustdesk server version
+  ansible.builtin.shell: curl "http://{{ rustdesk_server_ip }}:{{ http_port }}/rustdesk_config.txt"
+  register: rustdeskconfig
+  changed_when: false
+
+- name: Apply RustDesk configuration
+  ansible.builtin.shell: rustdesk --config "{{ rustdeskconfig.stdout | regex_replace ("serverip", rustdesk_server_ip ) }}"
+
+- name: Apply RustDesk password
+  ansible.builtin.shell: rustdesk --password "{{ rustdesk_client_password }}"
+
+- name: Set ID to Hostname
+  ansible.builtin.replace:
+    path: /root/.config/rustdesk/RustDesk.toml
+    regexp: 'enc_id = .*'
+    replace: "id = '{{ newclient_id }}'"
+
+- name: Restart rustdesk service to apply changes
+  ansible.builtin.systemd_service:
+    state: restarted
+    daemon_reload: true
+    name: rustdesk.service
+
+- name: Wait for service to restart
+  ansible.builtin.pause:
+    seconds: 5
+
+- name: Get RustDesk ID
+  ansible.builtin.shell: rustdesk --get-id
+  register: rustdesk_id_output
+
+- name: Register client with server
+  ansible.builtin.uri:
+    url: "http://{{ rustdesk_server_ip }}:{{ http_port }}/register"
+    method: POST
+    body_format: json
+    body:
+      client_id: "{{ rustdesk_id_output.stdout|trim }}"
+      hostname: "{{ ansible_hostname }}"
+      os: "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+      connection_string: "rustdesk://connection/new/{{ rustdesk_id_output.stdout|trim }}?password={{ rustdesk_client_password }}"
+    status_code: [200, 201]
+
+- name: Clean up installer
+  ansible.builtin.file:
+    path: /tmp/rustdesk.deb
+    state: absent
+
+- name: Display RustDesk ID
+  ansible.builtin.debug:
+    msg: "RustDesk ID: {{ rustdesk_id_output.stdout | trim }}"
+
+- name: Display RustDesk Password
+  ansible.builtin.debug:
+    msg: "Password: {{ rustdesk_client_password }}"

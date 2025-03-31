@@ -1,0 +1,193 @@
+- name: Install prerequisites
+  ansible.builtin.package:
+    name: "{{ pkg }}"
+    state: present
+    update_cache: yes
+  loop:
+    - curl
+    - wget
+    - unzip
+    - tar
+    - sudo
+    - ca-certificates
+    - python3.11-venv
+  loop_control:
+    loop_var: pkg
+
+- name: Update CA Certs 
+  ansible.builtin.shell: update-ca-certificates
+  changed_when: false
+
+# Create Rustdesk admin user and configure sudo access
+- name: Create Rustdesk admin user
+  ansible.builtin.user:
+    name: "{{ rustdesk_admin_user }}"
+    shell: /bin/bash
+    state: present
+    create_home: yes
+
+- name: Configure sudo access for Rustdesk admin user
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers.d/rustdesk_admin
+    line: "{{ rustdesk_admin_user }} ALL=(ALL) NOPASSWD:ALL"
+    state: present
+    mode: 0440
+    create: yes
+    validate: 'visudo -cf %s'
+
+- name: Create Rustdesk installation directory
+  ansible.builtin.file:
+    path: /opt/rustdesk
+    state: directory
+    owner: "{{ rustdesk_admin_user }}"
+    group: "{{ rustdesk_admin_user }}"
+    mode: '0755'
+
+- name: Copy ENV File
+  ansible.builtin.copy:
+    src: hbbr_env
+    dest: /opt/rustdesk/.env
+    mode: '0644'
+
+- name: Get latest Rustdesk server version
+  ansible.builtin.shell: curl https://api.github.com/repos/rustdesk/rustdesk-server/releases/latest -s | grep "tag_name" | awk -F'"' '{print $4}'
+  register: rustdesk_latest
+  changed_when: false
+
+- name: Check if Rustdesk is already installed
+  ansible.builtin.stat:
+    path: /opt/rustdesk/hbbs
+  register: rustdesk_installed
+
+- name: Download Rustdesk server based on architecture
+  ansible.builtin.get_url:
+    url: "https://github.com/rustdesk/rustdesk-server/releases/download/{{ rustdesk_latest.stdout }}/rustdesk-server-linux-{{ 'amd64' if ansible_architecture == 'x86_64' else 'armv7' if ansible_architecture == 'armv7l' else 'arm64v8' }}.zip"
+    dest: "/tmp/rustdesk-server.zip"
+
+- name: Extract Rustdesk server
+  ansible.builtin.unarchive:
+    src: "/tmp/rustdesk-server.zip"
+    dest: "/tmp/"
+    remote_src: yes
+
+- name: Move Rustdesk files to installation directory
+  ansible.builtin.shell: >
+    mv /tmp/{{ 'amd64' if ansible_architecture == 'x86_64' else 'armv7' if ansible_architecture == 'armv7l' else 'arm64v8' }}/* /opt/rustdesk/
+  args:
+    creates: /opt/rustdesk/hbbs
+
+- name: Make Rustdesk binaries executable
+  ansible.builtin.file:
+    path: "{{ item }}"
+    mode: '0755'
+  loop:
+    - "/opt/rustdesk/hbbs"
+    - "/opt/rustdesk/hbbr"
+
+- name: Cleanup installation files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/rustdesk-server.zip"
+    - "/tmp/{{ 'amd64' if ansible_architecture == 'x86_64' else 'armv7' if ansible_architecture == 'armv7l' else 'arm64v8' }}"
+
+- name: Create Rustdesk log directory
+  ansible.builtin.file:
+    path: "/var/log/rustdesk"
+    state: directory
+    owner: "{{ rustdesk_admin_user }}"
+    group: "{{ rustdesk_admin_user }}"
+    mode: '0755'
+
+- name: Create Signal Server systemd service
+  ansible.builtin.template:
+    src: rustdesksignal.service.j2
+    dest: /etc/systemd/system/rustdesksignal.service
+    mode: '0644'
+
+- name: Create Relay Server systemd service
+  ansible.builtin.template:
+    src: rustdeskrelay.service.j2
+    dest: /etc/systemd/system/rustdeskrelay.service
+    mode: '0644'
+
+- name: Enable and start Rustdesk services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  loop:
+    - rustdesksignal
+    - rustdeskrelay
+
+- name: Wait for Rustdesk relay service to be ready
+  ansible.builtin.shell: systemctl status rustdeskrelay.service | grep 'Active. active (running)'
+  register: relay_status
+  until: relay_status.rc == 0
+  retries: 10
+  delay: 3
+  changed_when: false
+
+- name: Find Rustdesk public key file
+  ansible.builtin.find:
+    paths: /opt/rustdesk
+    patterns: "*.pub"
+  register: pubkey_file
+
+- name: Read Rustdesk public key
+  ansible.builtin.shell: "cat {{ pubkey_file.files[0].path }}"
+  register: key_content
+  changed_when: false
+  when: pubkey_file.files | length > 0
+
+- name: Install HTTP Server
+  block:
+    - name: Create HTTP Server directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ rustdesk_admin_user }}"
+        group: "{{ rustdesk_admin_user }}"
+        mode: '0755'
+      loop:
+        - "/opt/httpserver"
+        - "/var/log/http/httpserver"
+
+    - name: Copy config to http directory
+      ansible.builtin.copy:
+        content: 'rustdesk-host=serverip,key={{ key_content.stdout }},relay=serverip'
+        dest: /opt/httpserver/rustdesk_config.txt
+        mode: '0644'
+
+    - name: Move Rustdesk files to installation directory
+      ansible.builtin.shell: |
+       python3 -m venv /opt/httpserver/venv
+      args:
+        creates: /opt/httpserver/venv
+
+    - name: Install flask in a virtualenv
+      ansible.builtin.shell: |
+        /opt/httpserver/venv/bin/python3 -m pip install flask
+
+    - name: Copy Flask Script to opt
+      ansible.builtin.copy:
+        src: RustdeskAddressbook.py
+        dest: /opt/httpserver/RustdeskAddressbook.py
+        mode: '0755'
+
+    - name: Create HTTP Server systemd service
+      ansible.builtin.template:
+        src: httpserver.service.j2
+        dest: /etc/systemd/system/httpserver.service
+        mode: '0644'
+
+    - name: Enable and start HTTP Server service
+      ansible.builtin.systemd:
+        name: httpserver
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      when: ansible_architecture == "x86_64" or ansible_architecture == "aarch64"
+  when: pubkey_file.files | length > 0
