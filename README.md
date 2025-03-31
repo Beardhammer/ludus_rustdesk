@@ -45,7 +45,7 @@ ludus:
     roles:
       - name: ludus_rustdesk
         depends_on:
-          - vm_name: PL-rustdesk
+          - vm_name: "{{ range_id }}-rustdesk"
             role: ludus_rustdesk
     role_vars:
       rustdesk_client: true
