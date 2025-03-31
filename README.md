@@ -8,15 +8,22 @@ None.
 
 ## Role Variables
 ```yaml
-# Server configuration
+# local user to run rustdesk-server as
 rustdesk_admin_user: "rustdeskadmin"
+
+#password for local user
 rustdesk_admin_password: "rustdeskadmin" 
+
+#port to run the http server on
+http_port: 8000 
+
 rustdesk_install_dir: "/opt/rustdesk"
 
-# Client configuration
+#rustdesk server ip, can manually specify or a task will check range config
 rustdesk_server_ip: ""
+
+#password to connect to the client
 rustdesk_client_password: "rustdeskclientpassword"
-http_port: 8000 
 rustdesk_clientid: ""
 
 rustdesk_server: false
@@ -27,7 +34,8 @@ rustdesk_client: false
 
 None.
 
-## Example Playbook
+## Installing
+ludus ansible role add Beardhammer.ludus_rustdesk
 
 ## Example Ludus Range Config
 
@@ -43,7 +51,7 @@ ludus:
     windows:
       sysprep: true
     roles:
-      - name: ludus_rustdesk
+      - name: Beardhammer.ludus_rustdesk
         depends_on:
           - vm_name: "{{ range_id }}-rustdesk"
             role: ludus_rustdesk
@@ -61,7 +69,7 @@ ludus:
       snapshot: false
       block_internet: false
     roles:
-      - ludus_rustdesk
+      - Beardhammer.ludus_rustdesk
     role_vars:
       rustdesk_server: true
 ```
